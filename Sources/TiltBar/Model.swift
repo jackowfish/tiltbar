@@ -6,7 +6,7 @@ enum Health: Int, Comparable {
     static func < (a: Health, b: Health) -> Bool { a.rawValue < b.rawValue }
 }
 
-struct TiltResource {
+struct TiltResource: Equatable {
     let name: String
     let labels: [String]
     let updateStatus: String
