@@ -9,6 +9,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var snapshot: Snapshot?
     private var lastError: String?
     private var menuIsOpen = false
+    private var openMenuDepth = 0
+    private var menuIsStale = false
     private var knownErrorNames: Set<String> = []
     private var notificationsReady = false
     private var recentlyTriggered: [String: Date] = [:]
@@ -17,6 +19,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var notifyOnErrors: Bool {
         get { UserDefaults.standard.object(forKey: "notifyOnErrors") as? Bool ?? true }
         set { UserDefaults.standard.set(newValue, forKey: "notifyOnErrors") }
+    }
+    private var compactIcon: Bool {
+        get { UserDefaults.standard.object(forKey: "compactIcon") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "compactIcon") }
     }
 
     // Tilt UI palette.
@@ -52,6 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         client.fetchResources { [weak self] result in
             DispatchQueue.main.async {
                 guard let self = self else { return }
+                let previous = self.snapshot?.resources
+                let previousError = self.lastError
                 switch result {
                 case .success(let snap):
                     self.lastError = nil
@@ -63,7 +71,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                     self.knownErrorNames = []
                 }
                 self.renderTitle()
-                if self.menuIsOpen { self.rebuildMenu() }
+                // Rebuilding tears down every submenu, so only do it when the
+                // content changed and the user is not inside a submenu.
+                let changed = previous != self.snapshot?.resources || previousError != self.lastError
+                guard changed, self.menuIsOpen else { return }
+                if self.openMenuDepth > 1 { self.menuIsStale = true } else { self.rebuildMenu() }
             }
         }
     }
@@ -83,33 +95,54 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             title.append(NSAttributedString(string: text, attributes: [.foregroundColor: color]))
         }
         guard let snap = snapshot else {
-            seg("◦ tilt off", Self.gray)
+            seg(compactIcon ? "◦" : "◦ tilt off", Self.gray)
             statusItem.button?.attributedTitle = title
-            statusItem.button?.toolTip = lastError
+            statusItem.button?.toolTip = lastError ?? "Tilt is not running"
             return
         }
         let e = snap.errors.count, p = snap.pending.count, h = snap.healthy.count
+        statusItem.button?.toolTip = "Tilt · \(e) errors, \(p) pending, \(h)/\(snap.total) healthy"
+        // Compact: one segment for the worst state, error over pending over healthy.
+        if compactIcon {
+            if e > 0 { seg("✕ \(e)", Self.red) }
+            else if p > 0 { seg("⚙ \(p)", Self.yellow) }
+            else { seg("✓", Self.green) }
+            statusItem.button?.attributedTitle = title
+            return
+        }
         seg("✕ \(e)", e > 0 ? Self.red : Self.gray)
         seg("  ", Self.gray)
         seg("⚙ \(p)", p > 0 ? Self.yellow : Self.gray)
         seg("  ", Self.gray)
         seg("✓ \(h)/\(snap.total)", Self.green)
         statusItem.button?.attributedTitle = title
-        statusItem.button?.toolTip = "Tilt · \(e) errors, \(p) pending, \(h)/\(snap.total) healthy"
     }
 
     // MARK: menu
 
-    func menuWillOpen(_ menu: NSMenu) {
+    func menuWillOpen(_ opened: NSMenu) {
+        openMenuDepth += 1
+        guard opened === menu else { return }
         menuIsOpen = true
         rebuildMenu()
     }
 
-    func menuDidClose(_ menu: NSMenu) {
-        menuIsOpen = false
+    func menuDidClose(_ closed: NSMenu) {
+        openMenuDepth = max(openMenuDepth - 1, 0)
+        if closed === menu {
+            menuIsOpen = false
+            openMenuDepth = 0
+            return
+        }
+        // Back at the top level: apply any poll result that arrived while a submenu was open.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.menuIsOpen, self.menuIsStale, self.openMenuDepth <= 1 else { return }
+            self.rebuildMenu()
+        }
     }
 
     private func rebuildMenu() {
+        menuIsStale = false
         menu.removeAllItems()
 
         guard let snap = snapshot else {
@@ -178,6 +211,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         notify.target = self
         notify.state = notifyOnErrors ? .on : .off
         menu.addItem(notify)
+        let compact = NSMenuItem(title: "Compact icon", action: #selector(toggleCompact), keyEquivalent: "")
+        compact.target = self
+        compact.state = compactIcon ? .on : .off
+        menu.addItem(compact)
         let refresh = NSMenuItem(title: "Refresh now", action: #selector(refreshNow), keyEquivalent: "r")
         refresh.target = self
         menu.addItem(refresh)
@@ -187,6 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func allResourcesMenu(_ snap: Snapshot) -> NSMenu {
         let sub = NSMenu()
+        sub.delegate = self
         let grouped = Dictionary(grouping: snap.resources.filter { !$0.isTiltfile }, by: { $0.groupLabel })
         for label in grouped.keys.sorted() {
             let members = grouped[label]!
@@ -194,6 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let item = NSMenuItem(title: "\(label)  (\(members.count))", action: nil, keyEquivalent: "")
             item.image = dot(for: worst)
             let groupMenu = NSMenu()
+            groupMenu.delegate = self
             for r in members.sorted(by: { ($0.health, $0.name) < ($1.health, $1.name) }) {
                 groupMenu.addItem(resourceItem(r))
             }
@@ -213,6 +252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
 
         let sub = NSMenu()
+        sub.delegate = self
         sub.addItem(disabledItem(r.statusSummary))
         if let since = r.pendingBuildSince, r.hasPendingChanges {
             sub.addItem(disabledItem("changes waiting since \(TiltResource.relative(since))"))
@@ -324,6 +364,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleNotify() {
         notifyOnErrors.toggle()
+    }
+
+    @objc private func toggleCompact() {
+        compactIcon.toggle()
+        renderTitle()
     }
 
     @objc private func refreshNow() {

@@ -7,6 +7,10 @@ dropdown.
 
     ✕ 2  ⚙ 1  ✓ 63/66
 
+By default the item is compact: one segment for the worst state, so `✕ 2` when
+anything is failing, `⚙ 1` when something is pending or building, and a lone green
+`✓` when all is well. Turn off **Compact icon** in the menu for the full spread above.
+
 ## Build and run
 
     make install     # builds dist/TiltBar.app and copies it to /Applications
@@ -24,7 +28,8 @@ Requires the Xcode command line tools (SwiftPM + AppKit); no Xcode project neede
   refreshed automatically after a Tilt restart.
 - "Open in Tilt UI" opens `localhost:10350/r/<resource>/overview`.
 
-The menu bar shows `◦ tilt off` in gray when the apiserver is unreachable.
+The menu bar shows `◦ tilt off` in gray when the apiserver is unreachable (just `◦`
+in compact mode).
 
 ## Menu
 
@@ -34,7 +39,8 @@ The menu bar shows `◦ tilt off` in gray when the apiserver is unreachable.
   "Run again" for local tasks), "Open in Tilt UI", and any endpoint links.
 - **In progress**: resources currently building or waiting on runtime.
 - **All resources**: every resource grouped by Tiltfile label, worst status first.
-- **Re-run Tiltfile**, notification toggle for newly failing resources, Refresh, Quit.
+- **Re-run Tiltfile**, notification toggle for newly failing resources, compact icon
+  toggle, Refresh, Quit.
 
 ## Environment overrides
 
